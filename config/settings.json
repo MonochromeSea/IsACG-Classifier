@@ -1,0 +1,14 @@
+{
+  "source_dir": "",
+  "output_dir_acg": "",
+  "output_dir_non_acg": "",
+  "path_layers": 1,
+  "thread_count": 2,
+  "auto_watch": false,
+  "watch_interval": 3,
+  "recursive": true,
+  "auto_move": true,
+  "auto_move_watch": true,
+  "move_mode": "move",
+  "model": "v1"
+}

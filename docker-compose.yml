@@ -1,0 +1,19 @@
+services:
+  isacg:
+    build: .
+    container_name: isacg-classifier
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8080
+      - STORAGE_DIR=/app/storage
+    volumes:
+      - ./storage:/app/storage
+      - ./config:/app/config
+      # 按飞牛上的实际目录修改下面这些挂载。
+      # 例如宿主机 /vol1/images 挂到容器 /data/source。
+      # - /vol1/images:/data/source
+      # - /vol1/acg:/data/acg
+      # - /vol1/non_acg:/data/non_acg
