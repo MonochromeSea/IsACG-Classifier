@@ -88,7 +88,7 @@ docker compose -f docker-compose.yml -f docker-compose.vulkan.yml up -d --build
 docker compose -f docker-compose.yml -f docker-compose.vulkan.yml logs -f isacg
 ```
 
-Vulkan/WebGPU 版属于实验性加速路径。日志显示 `WebGPUExecutionProvider/Vulkan` 代表模型走了 WebGPU/Vulkan EP，但不保证一定使用真实核显；如果容器没有拿到 `/dev/dri` 或驱动回落到 Mesa 软件 Vulkan，可能比 CPU 版更慢。建议用同一批图片对比单张耗时后再决定是否长期使用。
+Vulkan/WebGPU 版属于实验性加速路径。日志显示 `WebGPUExecutionProvider/Vulkan` 代表模型走了 WebGPU/Vulkan EP，但不保证一定使用真实核显；如果容器没有拿到 `/dev/dri` 或驱动回落到 Mesa 软件 Vulkan，可能比 CPU 版更慢。建议用同一批图片对比单张耗时后再决定是否长期使用。反正我的机器用核显就会比直接cpu多花一半时间。
 
 容器内对应路径固定为：
 
