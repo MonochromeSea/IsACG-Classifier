@@ -81,6 +81,12 @@ docker compose logs -f isacg
 
 如果 NAS 的 Docker Hub 镜像源返回 `401 Unauthorized`，保持 `.env` 中的 `PYTHON_SLIM_IMAGE=docker.m.daocloud.io/library/python:3.12-slim-bookworm`。CPU 和 Vulkan 构建都会使用这个基础镜像变量。
 
+如果使用 Docker Hub 预构建镜像：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.image.yml up -d
+```
+
 启动 Vulkan/WebGPU 版本：
 
 ```bash
@@ -88,7 +94,13 @@ docker compose -f docker-compose.yml -f docker-compose.vulkan.yml up -d --build
 docker compose -f docker-compose.yml -f docker-compose.vulkan.yml logs -f isacg
 ```
 
-Vulkan/WebGPU 版属于实验性加速路径。日志显示 `WebGPUExecutionProvider/Vulkan` 代表模型走了 WebGPU/Vulkan EP，但不保证一定使用真实核显；如果容器没有拿到 `/dev/dri` 或驱动回落到 Mesa 软件 Vulkan，可能比 CPU 版更慢。建议用同一批图片对比单张耗时后再决定是否长期使用。反正我的机器用核显就会比直接cpu多花一半时间。
+使用 Docker Hub 预构建 Vulkan 镜像：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.vulkan.yml -f docker-compose.image.vulkan.yml up -d
+```
+
+Vulkan/WebGPU 版属于实验性加速路径。日志显示 `WebGPUExecutionProvider/Vulkan` 代表模型走了 WebGPU/Vulkan EP，但不保证一定使用真实核显；如果容器没有拿到 `/dev/dri` 或驱动回落到 Mesa 软件 Vulkan，可能比 CPU 版更慢。建议用同一批图片对比单张耗时后再决定是否长期使用。
 
 容器内对应路径固定为：
 
@@ -100,7 +112,7 @@ Vulkan/WebGPU 版属于实验性加速路径。日志显示 `WebGPUExecutionProv
 
 网页设置页中请填写容器内路径，而不是宿主机路径。
 
-更多部署细节见 [docs/docker.md](docs/docker.md)，环境变量说明见 [docs/configuration.md](docs/configuration.md)，Vulkan 和 Docker 常见问题见 [docs/troubleshooting.md](docs/troubleshooting.md)。
+更多部署细节见 [docs/docker.md](docs/docker.md)，Docker Hub 自动构建见 [docs/dockerhub.md](docs/dockerhub.md)，环境变量说明见 [docs/configuration.md](docs/configuration.md)，Vulkan 和 Docker 常见问题见 [docs/troubleshooting.md](docs/troubleshooting.md)。
 
 ## 运行优化
 

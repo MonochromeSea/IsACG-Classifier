@@ -13,6 +13,12 @@ docker compose up -d --build
 docker compose logs -f isacg
 ```
 
+使用 Docker Hub 预构建镜像：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.image.yml up -d
+```
+
 停止：
 
 ```bash
@@ -38,6 +44,12 @@ Vulkan 版本使用 ONNX Runtime WebGPU Execution Provider 插件。在 Linux �
 cp .env.example .env
 docker compose -f docker-compose.yml -f docker-compose.vulkan.yml up -d --build
 docker compose -f docker-compose.yml -f docker-compose.vulkan.yml logs -f isacg
+```
+
+使用 Docker Hub 预构建镜像：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.vulkan.yml -f docker-compose.image.vulkan.yml up -d
 ```
 
 成功时日志应出现：
