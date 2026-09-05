@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IsACG 文件夹识别与设置</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  </head>
+  <body>
+    <main class="page-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Folder Mode</p>
+          <h1>文件夹识别与设置</h1>
+          <p class="intro">读取服务器目录，批量识别图片，并按结果自动整理。</p>
+        </div>
+        <div class="topbar-actions">
+          <nav class="top-nav" aria-label="页面导航">
+            <a href="/">单张识别</a>
+            <span class="active-page">文件夹设置</span>
+          </nav>
+          <button id="themeToggle" class="theme-toggle" type="button">深色</button>
+        </div>
+      </header>
+
+      <section class="workspace">
+        <div class="settings-grid">
+          <div class="settings-card">
+            <div class="settings-card-heading">
+              <h2>源文件夹</h2>
+              <span class="settings-label">挂载读取位置</span>
+            </div>
+            <div class="path-field">
+              <input id="sourceDirInput" type="text" autocomplete="off" placeholder="例如 D:\images 或 /mnt/nas/images" />
+              <button id="browseSourceButton" class="secondary-button" type="button">浏览</button>
+            </div>
+            <p class="field-hint">将递归扫描这个文件夹内的图片，可随时修改。</p>
+          </div>
+
+          <div class="settings-card">
+            <div class="settings-card-heading">
+              <h2>输出文件夹</h2>
+              <span class="settings-label">ACG 与非 ACG 分开存放</span>
+            </div>
+            <div class="path-field">
+              <input id="acgOutputDirInput" type="text" autocomplete="off" placeholder="ACG 输出文件夹" />
+              <button id="browseAcgOutputButton" class="secondary-button" type="button">浏览</button>
+            </div>
+            <div class="path-field output-path-spacer">
+              <input id="nonAcgOutputDirInput" type="text" autocomplete="off" placeholder="非 ACG 输出文件夹" />
+              <button id="browseNonAcgOutputButton" class="secondary-button" type="button">浏览</button>
+            </div>
+            <p class="field-hint">识别结果会分别写入这两个目录。</p>
+          </div>
+        </div>
+
+        <div class="settings-card">
+          <div class="settings-card-heading">
+            <h2>识别与移动设置</h2>
+            <span class="settings-label">影响批量识别和自动监控</span>
+          </div>
+          <div class="options-grid">
+            <label class="field">
+              <span>识别模型</span>
+              <div class="select-wrap">
+                <select id="modelSelect" class="select-control">
+                  {% for model_id, model in models.items() %}
+                    <option value="{{ model_id }}">{{ model.title }} · {{ model.description }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+            </label>
+
+            <label class="field">
+              <span>识别线程数</span>
+              <input id="threadCountInput" class="number-control" type="number" min="1" max="32" value="2" />
+            </label>
+
+            <label class="field">
+              <span>保留路径层数</span>
+              <input id="pathLayersInput" class="number-control" type="number" min="0" max="20" value="0" />
+            </label>
+
+            <label class="field">
+              <span>监控间隔（秒）</span>
+              <input id="watchIntervalInput" class="number-control" type="number" min="1" max="60" value="3" />
+            </label>
+
+            <label class="field">
+              <span>文件处理方式</span>
+              <div class="select-wrap">
+                <select id="moveModeSelect" class="select-control">
+                  <option value="move">移动</option>
+                  <option value="copy">复制</option>
+                  <option value="hardlink">硬链接</option>
+                  <option value="symlink">软链接</option>
+                </select>
+              </div>
+            </label>
+
+            <label class="check-field">
+              <input id="recursiveInput" type="checkbox" checked />
+              <span>递归扫描子文件夹</span>
+            </label>
+
+            <label class="check-field">
+              <input id="autoMoveInput" type="checkbox" checked />
+              <span>识别后自动移动</span>
+            </label>
+          </div>
+          <button id="saveSettingsButton" class="primary-button" type="button">保存设置</button>
+        </div>
+
+        <div class="settings-card watcher-card">
+          <div class="settings-card-heading">
+            <h2>自动监控</h2>
+            <span id="watcherState" class="watcher-badge">未运行</span>
+          </div>
+          <p class="field-hint">监控源文件夹的新增图片，自动识别并按设置移动。</p>
+          <label class="check-field">
+            <input id="watchAutoMoveInput" type="checkbox" checked />
+            <span>监控识别后自动移动</span>
+          </label>
+          <div class="batch-actions">
+            <button id="startWatcherButton" class="primary-button" type="button">启动监控</button>
+            <button id="stopWatcherButton" class="ghost-button" type="button" disabled>停止监控</button>
+          </div>
+          <div class="watcher-summary">
+            <span>已自动处理：<strong id="watcherProcessed">0</strong></span>
+            <span>最近扫描：<strong id="watcherLastScan">暂无</strong></span>
+          </div>
+        </div>
+
+        <div class="settings-card">
+          <div class="settings-card-heading">
+            <h2>批量识别</h2>
+            <div class="settings-card-actions">
+              <span id="scanSummary" class="settings-label">尚未扫描</span>
+              <div class="view-toggle" aria-label="结果视图">
+                <button id="gridViewButton" class="view-toggle-button active" type="button">大图</button>
+                <button id="listViewButton" class="view-toggle-button" type="button">列表</button>
+              </div>
+            </div>
+          </div>
+          <div class="batch-actions">
+            <button id="scanButton" class="secondary-button" type="button">扫描图片</button>
+            <button id="classifyFolderButton" class="primary-button" type="button" disabled>开始批量识别</button>
+            <button id="moveBatchButton" class="secondary-button" type="button" disabled>移动当前结果</button>
+            <button id="undoMoveButton" class="ghost-button" type="button" disabled>撤销移动</button>
+          </div>
+          <div id="taskProgress" class="task-progress" hidden>
+            <div class="task-progress-heading">
+              <span id="taskMessage">准备中...</span>
+              <span id="taskPercent">0%</span>
+            </div>
+            <div class="task-progress-track">
+              <span id="taskProgressFill" class="task-progress-fill"></span>
+            </div>
+            <div class="task-controls">
+              <button id="pauseJobButton" class="ghost-button" type="button" disabled>暂停</button>
+              <button id="resumeJobButton" class="ghost-button" type="button" disabled>继续</button>
+              <button id="cancelJobButton" class="ghost-button" type="button" disabled>取消</button>
+            </div>
+          </div>
+          <div class="pagination-bar">
+            <span id="pageInfo">暂无图片</span>
+            <div class="pagination-controls">
+              <label class="page-size-field">
+                每页
+                <input id="pageSizeInput" class="page-size-input" type="number" min="1" max="500" value="20" />
+                张
+              </label>
+              <button id="prevPageButton" class="ghost-button" type="button" disabled>上一页</button>
+              <button id="nextPageButton" class="ghost-button" type="button" disabled>下一页</button>
+            </div>
+          </div>
+          <div id="folderResultGrid" class="folder-result-grid"></div>
+          <div id="resultTableWrap" class="result-table-wrap" hidden>
+            <table class="result-table">
+              <thead>
+                <tr>
+                  <th>预览</th>
+                  <th>文件名</th>
+                  <th>路径</th>
+                  <th>结果</th>
+                  <th>置信度</th>
+                  <th>移动状态</th>
+                </tr>
+              </thead>
+              <tbody id="folderResultBody">
+                <tr class="empty-table-row">
+                  <td colspan="6">扫描文件夹后，这里会显示图片列表。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="settings-card">
+          <div class="settings-card-heading">
+            <h2>运行日志</h2>
+            <button id="clearLogsButton" class="ghost-button" type="button">清空</button>
+          </div>
+          <div id="logList" class="log-list"></div>
+        </div>
+      </section>
+    </main>
+
+    <div class="modal-backdrop" id="browseModal" hidden>
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="browseTitle">
+        <div class="modal-heading">
+          <div>
+            <p class="eyebrow">Select Folder</p>
+            <h2 id="browseTitle">选择文件夹</h2>
+          </div>
+          <button id="closeBrowseButton" class="ghost-button" type="button">关闭</button>
+        </div>
+        <div class="path-field">
+          <input id="browserPathInput" type="text" autocomplete="off" />
+          <button id="browserGoButton" class="secondary-button" type="button">进入</button>
+        </div>
+        <div class="browser-list" id="browserList"></div>
+        <div class="modal-actions">
+          <button id="cancelBrowseButton" class="ghost-button" type="button">取消</button>
+          <button id="confirmBrowseButton" class="primary-button" type="button">选择当前文件夹</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='theme.js') }}"></script>
+    <script src="{{ url_for('static', filename='settings.js') }}"></script>
+  </body>
+</html>

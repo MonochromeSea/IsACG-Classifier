@@ -1,0 +1,28 @@
+services:
+  isacg:
+    build:
+      context: .
+      args:
+        BASE_IMAGE: python:3.12-slim
+        REQUIREMENTS_FILE: requirements.txt
+    container_name: isacg-classifier
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8080"
+      STORAGE_DIR: /app/storage
+      ISACG_DEVICE: CPU
+      ISACG_PRELOAD_MODELS: "${ISACG_PRELOAD_MODELS:-v1s}"
+      ORT_INTRA_OP_THREADS: "${ORT_INTRA_OP_THREADS:-1}"
+      ORT_INTER_OP_THREADS: "${ORT_INTER_OP_THREADS:-1}"
+      WAITRESS_THREADS: "${WAITRESS_THREADS:-4}"
+      JOB_SAVE_INTERVAL: "${JOB_SAVE_INTERVAL:-0.75}"
+      JOB_HISTORY_LIMIT: "${JOB_HISTORY_LIMIT:-30}"
+    volumes:
+      - ./storage:/app/storage
+      - ./config:/app/config
+      - ${ISACG_SOURCE_DIR:-./data/source}:/data/source
+      - ${ISACG_ACG_DIR:-./data/acg}:/data/acg
+      - ${ISACG_NON_ACG_DIR:-./data/non_acg}:/data/non_acg
