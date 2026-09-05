@@ -115,4 +115,4 @@ PYTHON_SLIM_IMAGE=docker.m.daocloud.io/library/python:3.12-slim-bookworm
 PYTHON_SLIM_IMAGE=python:3.12-slim-bookworm
 ```
 
-CPU 版本可在 `docker-compose.yml` 的 `BASE_IMAGE` 构建参数中调整基础镜像。
+CPU 和 Vulkan 版本都会读取 `PYTHON_SLIM_IMAGE`。如果构建 CPU 版时遇到 `docker.fnnas.com` 返回 `401 Unauthorized`，保持 `.env.example` 里的 DaoCloud 镜像源即可。

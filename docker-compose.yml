@@ -3,7 +3,7 @@ services:
     build:
       context: .
       args:
-        BASE_IMAGE: python:3.12-slim
+        BASE_IMAGE: "${PYTHON_SLIM_IMAGE:-docker.m.daocloud.io/library/python:3.12-slim-bookworm}"
         REQUIREMENTS_FILE: requirements.txt
     container_name: isacg-classifier
     restart: unless-stopped
