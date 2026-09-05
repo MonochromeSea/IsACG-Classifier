@@ -1,5 +1,44 @@
 # 故障排查
 
+## Vulkan 显示启用但速度比 CPU 慢
+
+`WebGPUExecutionProvider/Vulkan` 只代表 ONNX Runtime 使用了 WebGPU/Vulkan EP，不保证真实核显正在参与计算。常见原因：
+
+- 容器没有映射 `/dev/dri`
+- 容器用户没有权限访问 `/dev/dri/renderD*`
+- Vulkan 驱动回落到 Mesa 软件实现，例如 `llvmpipe` 或 `lavapipe`
+- 模型较小，WebGPU/Vulkan 的调度和数据拷贝开销超过了加速收益
+- 某些算子仍然回落 CPU，导致 CPU/GPU 来回切换
+
+先确认 compose 最终配置里确实有设备映射：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.vulkan.yml config | grep -A3 devices
+docker inspect isacg-classifier --format '{{json .HostConfig.Devices}} {{json .HostConfig.Privileged}} {{json .HostConfig.GroupAdd}}'
+```
+
+默认不需要 `privileged: true`。如果 `/dev/dri` 已映射并且 `renderD*` 权限正确，普通设备映射比高权限容器更合适。
+
+再确认 Vulkan 设备不是软件实现。可临时安装诊断工具：
+
+```bash
+docker exec -it isacg-classifier sh
+apt-get update && apt-get install -y --no-install-recommends vulkan-tools
+vulkaninfo --summary
+```
+
+如果输出里是 `llvmpipe` 或 `lavapipe`，说明当前 Vulkan 实际跑在 CPU 软件栈上，比 CPU 版慢是正常的。此时建议直接使用 CPU 版本。
+
+如果同时存在真实 GPU 和 `llvmpipe`，可以在 `.env` 中强制选择真实 GPU：
+
+```dotenv
+MESA_VK_DEVICE_SELECT=8086:3e96!
+```
+
+值来自 `vulkaninfo --summary` 输出里的 `vendorID:deviceID`。末尾的 `!` 表示只向 Vulkan 应用暴露该设备。`8086:3e96!` 对应 Intel UHD Graphics P630。
+
+如果确认是真实 Intel/AMD GPU，但实测仍比 CPU 慢，也建议保留 CPU 版本。这个项目的 ONNX 模型体积较小，CPU 推理开销低，Vulkan/WebGPU 不一定有稳定收益。
+
 ## Vulkan 容器启动后仍然走 CPU
 
 确认容器是否拿到核显设备：
@@ -108,3 +147,4 @@ python3 -m pip install --upgrade pip
 - 单张图片的 `elapsed_ms` 是否明显降低
 - `docker exec` 中 provider 是否包含 WebGPU 插件
 - 宿主机可用时，用 `intel_gpu_top`、`radeontop` 或 `nvtop` 观察
+- 容器内 `vulkaninfo --summary` 是否显示真实 GPU，而不是 `llvmpipe` 或 `lavapipe`
