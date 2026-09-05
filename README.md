@@ -58,6 +58,44 @@ storage/
 
 ## Docker 快速开始
 
+最小 `docker-compose.yml` 示例：
+
+```yaml
+services:
+  isacg:
+    image: monochromesea/isacg-classifier:latest
+    container_name: isacg-classifier
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8080"
+      STORAGE_DIR: /app/storage
+      ISACG_DEVICE: CPU
+      ISACG_PRELOAD_MODELS: v1s
+      ORT_INTRA_OP_THREADS: "1"
+      ORT_INTER_OP_THREADS: "1"
+      WAITRESS_THREADS: "4"
+      JOB_SAVE_INTERVAL: "0.75"
+      JOB_HISTORY_LIMIT: "30"
+    volumes:
+      - ./storage:/app/storage
+      - ./config:/app/config
+      - /path/to/source:/data/source
+      - /path/to/acg:/data/acg
+      - /path/to/non_acg:/data/non_acg
+```
+
+保存后启动：
+
+```bash
+docker compose up -d
+docker compose logs -f isacg
+```
+
+如果从源码构建，使用仓库内置 compose 文件：
+
 复制配置文件：
 
 ```bash
