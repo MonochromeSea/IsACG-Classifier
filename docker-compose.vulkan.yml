@@ -8,6 +8,7 @@ services:
     environment:
       ISACG_DEVICE: VULKAN
       XDG_RUNTIME_DIR: /tmp/runtime-root
+      MESA_VK_DEVICE_SELECT: "${MESA_VK_DEVICE_SELECT:-8086:3e96!}"
     devices:
       - /dev/dri:/dev/dri
     device_cgroup_rules:
