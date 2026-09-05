@@ -1,4 +1,4 @@
 services:
   isacg:
-    image: "${ISACG_IMAGE:-monochromesea/isacg-classifier:latest}"
+    image: "${ISACG_IMAGE:-monomm/isacg-classifier:latest}"
     build: null

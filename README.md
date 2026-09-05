@@ -63,7 +63,7 @@ storage/
 ```yaml
 services:
   isacg:
-    image: monochromesea/isacg-classifier:latest
+    image: monomm/isacg-classifier:latest
     container_name: isacg-classifier
     restart: unless-stopped
     ports:

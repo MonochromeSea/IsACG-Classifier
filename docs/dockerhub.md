@@ -14,7 +14,7 @@ Settings -> Secrets and variables -> Actions -> Repository secrets
 
 | Secret | 说明 |
 | --- | --- |
-| `DOCKERHUB_USERNAME` | Docker Hub 用户名，例如 `monochromesea` |
+| `DOCKERHUB_USERNAME` | Docker Hub 用户名，例如 `monomm` |
 | `DOCKERHUB_TOKEN` | Docker Hub Access Token |
 
 ## 触发构建
@@ -64,7 +64,7 @@ Vulkan/WebGPU 版本：
 docker compose -f docker-compose.yml -f docker-compose.vulkan.yml -f docker-compose.image.vulkan.yml up -d
 ```
 
-如果镜像不在 `monochromesea/isacg-classifier`，在 `.env` 中覆盖：
+如果镜像不在 `monomm/isacg-classifier`，在 `.env` 中覆盖：
 
 ```dotenv
 ISACG_IMAGE=your-dockerhub-name/isacg-classifier:latest
