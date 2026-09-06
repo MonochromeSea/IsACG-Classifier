@@ -17,6 +17,20 @@
 | `PYTHON_SLIM_IMAGE` | `docker.m.daocloud.io/library/python:3.12-slim-bookworm` | Vulkan 镜像的 Python 基础镜像 |
 | `ISACG_RENDER_GID` | `0` | 容器访问 `/dev/dri/renderD*` 时使用的宿主机 render 组 GID |
 
+更多自动监控选项保存在 `config/settings.json` 中，可在网页设置页调整：
+
+| 配置 | 默认值 | 说明 |
+| --- | --- | --- |
+| `watch_existing_files` | `true` | 启动监控时是否处理源目录已有未处理图片 |
+| `auto_move_watch` | `true` | 监控识别后是否自动处理文件 |
+| `watch_interval` | `3` | 自动监控轮询 fallback 的扫描间隔，单位秒；默认事件模式不按间隔扫盘 |
+
+## 自动监控
+
+自动监控默认使用 watchdog/inotify 事件模式，适合 NAS 长期运行。开启“忽略已有文件，仅处理新增/修改”时，服务不会先遍历源目录，而是等待新增、移动进入或修改图片事件；开启“处理所有未处理文件”时，会在启动监控时扫描一次已有文件，随后进入事件模式。
+
+如果镜像或运行环境缺少 watchdog，程序会自动回退到轮询扫描模式，此时 `watch_interval` 才会生效。轮询模式会定期遍历源目录，但仍然只识别新增或文件指纹变化的图片，不会每次把全量图片重新识别一遍。
+
 ## 模型预加载
 
 默认只预加载轻量模型：

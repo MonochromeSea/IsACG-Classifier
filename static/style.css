@@ -610,6 +610,19 @@ h1 {
   color: var(--teal-dark);
 }
 
+.watcher-badge.working {
+  background: #fff2d2;
+  color: #8c5c09;
+}
+
+.watcher-progress-panel {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #dde7df;
+  border-radius: 8px;
+  background: #f8fbf8;
+}
+
 .watcher-summary {
   display: flex;
   flex-wrap: wrap;
@@ -1305,6 +1318,16 @@ html[data-theme="dark"] .result-pill.acg,
 html[data-theme="dark"] .watcher-badge.running {
   background-color: #17352f;
   color: var(--teal);
+}
+
+html[data-theme="dark"] .watcher-badge.working {
+  background-color: #3a2d14;
+  color: var(--amber);
+}
+
+html[data-theme="dark"] .watcher-progress-panel {
+  background-color: var(--surface-soft);
+  border-color: var(--line);
 }
 
 html[data-theme="dark"] .result-pill.non-acg {

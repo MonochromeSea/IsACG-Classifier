@@ -361,9 +361,11 @@ def get_settings():
 @app.post("/api/settings")
 def update_settings():
     payload = request.get_json(silent=True) or {}
-    saved = settings_manager.save(payload)
+    current = settings_manager.load()
+    current.update(payload)
+    saved = settings_manager.save(current)
     if saved.get("auto_watch"):
-        folder_watcher.start()
+        folder_watcher.start(process_existing=bool(saved.get("watch_existing_files", True)))
     else:
         folder_watcher.stop()
     return jsonify({"success": True, "settings": saved})
@@ -877,10 +879,12 @@ def move_folder_results():
 
 @app.post("/api/watcher/start")
 def start_watcher():
+    payload = request.get_json(silent=True) or {}
     settings = settings_manager.load()
+    settings.update(payload)
     settings["auto_watch"] = True
-    settings_manager.save(settings)
-    folder_watcher.start()
+    saved = settings_manager.save(settings)
+    folder_watcher.start(process_existing=bool(saved.get("watch_existing_files", True)))
     return jsonify({"success": True, "status": folder_watcher.status()})
 
 

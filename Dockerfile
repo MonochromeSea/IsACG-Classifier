@@ -8,8 +8,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 ARG REQUIREMENTS_FILE=requirements.txt
-COPY requirements.txt ./
-RUN python3 -m pip install --no-cache-dir -r ${REQUIREMENTS_FILE}
+COPY requirements*.txt ./
+RUN python3 -m pip install --no-cache-dir -r ${REQUIREMENTS_FILE} \
+    && python3 -c "import watchdog; print('watchdog: ok')"
 
 COPY app.py folder_service.py job_service.py serve.py ./
 COPY templates ./templates

@@ -17,6 +17,7 @@ RUN apt-get update \
 
 COPY requirements-vulkan.txt ./
 RUN python3 -m pip install --no-cache-dir -r requirements-vulkan.txt \
+    && python3 -c "import watchdog; print('watchdog: ok')" \
     && python3 -c "import onnxruntime as ort; import onnxruntime_ep_webgpu as webgpu; print('ORT providers:', ort.get_available_providers()); print('WebGPU EP:', webgpu.get_ep_name(), webgpu.get_library_path())"
 
 COPY app.py folder_service.py job_service.py serve.py ./

@@ -31,6 +31,7 @@ const moveModeSelect = document.querySelector("#moveModeSelect");
 const recursiveInput = document.querySelector("#recursiveInput");
 const autoMoveInput = document.querySelector("#autoMoveInput");
 const watchAutoMoveInput = document.querySelector("#watchAutoMoveInput");
+const watchInitialModeSelect = document.querySelector("#watchInitialModeSelect");
 const saveSettingsButton = document.querySelector("#saveSettingsButton");
 const scanButton = document.querySelector("#scanButton");
 const classifyFolderButton = document.querySelector("#classifyFolderButton");
@@ -58,6 +59,13 @@ const cancelJobButton = document.querySelector("#cancelJobButton");
 const watcherState = document.querySelector("#watcherState");
 const watcherProcessed = document.querySelector("#watcherProcessed");
 const watcherLastScan = document.querySelector("#watcherLastScan");
+const watcherScanned = document.querySelector("#watcherScanned");
+const watcherPending = document.querySelector("#watcherPending");
+const watcherCurrentFile = document.querySelector("#watcherCurrentFile");
+const watcherMode = document.querySelector("#watcherMode");
+const watcherMessage = document.querySelector("#watcherMessage");
+const watcherProgressText = document.querySelector("#watcherProgressText");
+const watcherProgressFill = document.querySelector("#watcherProgressFill");
 const startWatcherButton = document.querySelector("#startWatcherButton");
 const stopWatcherButton = document.querySelector("#stopWatcherButton");
 const browseModal = document.querySelector("#browseModal");
@@ -204,6 +212,7 @@ function currentSettings() {
     recursive: recursiveInput.checked,
     auto_move: autoMoveInput.checked,
     auto_move_watch: watchAutoMoveInput.checked,
+    watch_existing_files: watchInitialModeSelect ? watchInitialModeSelect.value === "all" : true,
   };
 }
 
@@ -221,6 +230,9 @@ function populateSettings(settings) {
   recursiveInput.checked = settings.recursive !== false;
   autoMoveInput.checked = settings.auto_move !== false;
   watchAutoMoveInput.checked = settings.auto_move_watch !== false;
+  if (watchInitialModeSelect) {
+    watchInitialModeSelect.value = settings.watch_existing_files === false ? "new" : "all";
+  }
 }
 
 function setButtonLoading(button, loading, text) {
@@ -812,10 +824,27 @@ function updateWatcherUI(status) {
   if (!status) {
     return;
   }
-  watcherState.textContent = status.running ? "运行中" : "未运行";
+  const progress = Number(status.batch_progress || 0);
+  const total = Number(status.batch_total || 0);
+  const pending = Number(status.pending_count || 0);
+  const working = status.running && (["baselining", "scanning", "processing", "starting"].includes(status.phase) || pending > 0);
+  const modeLabels = {
+    event: "事件模式",
+    polling: "轮询模式",
+    idle: "暂无",
+  };
+  watcherState.textContent = status.running ? (working ? "处理中" : "运行中") : "未运行";
   watcherState.classList.toggle("running", status.running);
+  watcherState.classList.toggle("working", working);
   watcherProcessed.textContent = status.processed_count || 0;
   watcherLastScan.textContent = status.last_scan || "暂无";
+  watcherScanned.textContent = status.scan_count || 0;
+  watcherPending.textContent = pending;
+  watcherCurrentFile.textContent = status.current_file || "暂无";
+  watcherMode.textContent = modeLabels[status.monitor_mode] || status.monitor_mode || "暂无";
+  watcherMessage.textContent = status.message || (status.running ? "自动监控运行中" : "监控未运行");
+  watcherProgressText.textContent = total ? `${progress}/${total}` : "0/0";
+  watcherProgressFill.style.width = total ? `${Math.min(100, Math.round((progress / total) * 100))}%` : "0%";
   startWatcherButton.disabled = status.running;
   stopWatcherButton.disabled = !status.running;
 }
@@ -836,8 +865,12 @@ async function refreshWatcherStatus() {
 
 async function startWatcher() {
   try {
-    await saveSettings({ auto_watch: true });
-    const status = await api("/api/watcher/start", { method: "POST" });
+    const processExisting = watchInitialModeSelect ? watchInitialModeSelect.value === "all" : true;
+    const status = await api("/api/watcher/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...currentSettings(), watch_existing_files: processExisting }),
+    });
     updateWatcherUI(status.status || status);
     refreshWatcherStatus();
   } catch (error) {

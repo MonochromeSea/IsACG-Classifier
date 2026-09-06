@@ -8,19 +8,52 @@ import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
+from queue import Empty, Queue
 from typing import Any
 
 from PIL import Image, UnidentifiedImageError
+
+try:
+    from watchdog.events import FileSystemEventHandler
+    from watchdog.observers import Observer
+except ImportError:
+    FileSystemEventHandler = None
+    Observer = None
 
 
 logger = logging.getLogger("isacg")
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 MOVE_MODES = {"move", "copy", "hardlink", "symlink"}
+WATCHDOG_AVAILABLE = FileSystemEventHandler is not None and Observer is not None
 
 
 class ProcessingCancelled(Exception):
     pass
+
+
+if FileSystemEventHandler is not None:
+    class ImageEventHandler(FileSystemEventHandler):
+        def __init__(self, event_queue: Queue):
+            self.event_queue = event_queue
+
+        def on_created(self, event):
+            self._enqueue(event)
+
+        def on_modified(self, event):
+            self._enqueue(event)
+
+        def on_moved(self, event):
+            self._enqueue(event, moved=True)
+
+        def _enqueue(self, event, moved: bool = False):
+            if event.is_directory:
+                return
+            path_value = event.dest_path if moved and getattr(event, "dest_path", "") else event.src_path
+            if Path(path_value).suffix.lower() in IMAGE_EXTENSIONS:
+                self.event_queue.put(Path(path_value))
+else:
+    ImageEventHandler = None
 
 
 DEFAULT_SETTINGS = {
@@ -34,6 +67,7 @@ DEFAULT_SETTINGS = {
     "recursive": True,
     "auto_move": True,
     "auto_move_watch": True,
+    "watch_existing_files": True,
     "move_mode": "move",
     "model": "v1s",
 }
@@ -70,6 +104,7 @@ class SettingsManager:
                 merged.get("move_mode") if merged.get("move_mode") in MOVE_MODES else "move"
             )
             merged["auto_move_watch"] = bool(merged.get("auto_move_watch", True))
+            merged["watch_existing_files"] = bool(merged.get("watch_existing_files", True))
             return merged
 
     def save(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -86,6 +121,7 @@ class SettingsManager:
             clean["recursive"] = bool(clean.get("recursive", True))
             clean["auto_move"] = bool(clean.get("auto_move", True))
             clean["auto_move_watch"] = bool(clean.get("auto_move_watch", True))
+            clean["watch_existing_files"] = bool(clean.get("watch_existing_files", True))
             clean["move_mode"] = (
                 clean.get("move_mode") if clean.get("move_mode") in MOVE_MODES else "move"
             )
@@ -591,9 +627,21 @@ class FolderWatcher:
         self.processed: dict[str, str] = {}
         self.recent: list[dict[str, Any]] = []
         self.logs: list[dict[str, Any]] = []
+        self.event_queue: Queue[Path] = Queue()
+        self.observer = None
         self.processed_count = 0
         self.last_scan = None
         self.last_error = ""
+        self.phase = "idle"
+        self.message = "监控未运行"
+        self.monitor_mode = "idle"
+        self.watchdog_available = WATCHDOG_AVAILABLE
+        self.scan_count = 0
+        self.pending_count = 0
+        self.batch_total = 0
+        self.batch_progress = 0
+        self.current_file = ""
+        self.event_debounce_seconds = 2.0
         self._load_state()
 
     def _load_state(self):
@@ -634,20 +682,38 @@ class FolderWatcher:
         stat = path.stat()
         return f"{stat.st_size}:{stat.st_mtime_ns}"
 
-    def start(self):
+    def start(self, process_existing: bool = True):
         with self.lock:
             if self.thread and self.thread.is_alive():
                 return
             self.stop_event.clear()
-            self.thread = threading.Thread(target=self._run, name="folder-watcher", daemon=True)
+            self.event_queue = Queue()
+        with self.lock:
+            self.thread = threading.Thread(
+                target=self._run,
+                args=(process_existing,),
+                name="folder-watcher",
+                daemon=True,
+            )
             self.thread.start()
-            self.log("自动监控已启动")
+            self.phase = "idle"
+            self.message = "自动监控已启动，等待新增图片"
+            mode = "处理已有文件" if process_existing else "忽略已有文件，仅处理新增/修改"
+            self.log(f"自动监控已启动（{mode}）")
 
     def stop(self):
         self.stop_event.set()
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=2)
         self.thread = None
+        with self.lock:
+            self.phase = "stopped"
+            self.message = "自动监控已停止"
+            self.monitor_mode = "idle"
+            self.pending_count = 0
+            self.batch_total = 0
+            self.batch_progress = 0
+            self.current_file = ""
         self.log("自动监控已停止")
 
     def log(self, message: str):
@@ -663,11 +729,78 @@ class FolderWatcher:
                 "processed_count": self.processed_count,
                 "last_scan": self.last_scan,
                 "last_error": self.last_error,
+                "phase": self.phase,
+                "message": self.message,
+                "monitor_mode": self.monitor_mode,
+                "watchdog_available": self.watchdog_available,
+                "scan_count": self.scan_count,
+                "pending_count": self.pending_count,
+                "batch_total": self.batch_total,
+                "batch_progress": self.batch_progress,
+                "current_file": self.current_file,
+                "has_pending_task": self.pending_count > 0
+                or self.phase in {"baselining", "scanning", "processing", "starting"},
                 "recent": self.recent[-20:],
                 "logs": self.logs[-100:],
             }
 
-    def _run(self):
+    def _set_runtime_state(self, **values):
+        with self.lock:
+            for key, value in values.items():
+                setattr(self, key, value)
+
+    def _baseline_current_files(self, settings: dict[str, Any]):
+        source_dir = settings.get("source_dir", "")
+        if not source_dir:
+            return
+        output_dir_acg = settings.get("output_dir_acg", "")
+        output_dir_non_acg = settings.get("output_dir_non_acg", "")
+        self._set_runtime_state(
+            phase="baselining",
+            message="正在登记已有图片，之后只处理新增/修改",
+            scan_count=0,
+            pending_count=0,
+            batch_total=0,
+            batch_progress=0,
+            current_file="",
+        )
+
+        def progress(found, _):
+            self._set_runtime_state(scan_count=found, message=f"正在登记已有图片：{found} 张")
+
+        paths = self.processor.scan_images(
+            source_dir,
+            recursive=settings.get("recursive", True),
+            output_dirs=[output_dir_acg, output_dir_non_acg],
+            progress_callback=progress,
+        )
+        fingerprints = {}
+        for path in paths:
+            try:
+                fingerprints[str(path)] = self._fingerprint(path)
+            except OSError:
+                continue
+        with self.lock:
+            self.processed.update(fingerprints)
+            self.scan_count = len(paths)
+            self.phase = "idle"
+            self.message = f"已忽略当前已有 {len(paths)} 张图片，等待新增/修改"
+            self._save_state()
+        self.log(f"已登记当前已有 {len(paths)} 张图片，后续仅监控新增或修改")
+
+    def _run(self, process_existing: bool = True):
+        if WATCHDOG_AVAILABLE:
+            self._run_event_watch(process_existing)
+            return
+
+        self.log("未安装 watchdog，自动监控回退为定时扫描模式")
+        if not process_existing:
+            settings = self.settings_manager.load()
+            self._baseline_current_files(settings)
+        self._run_polling_watch()
+
+    def _run_polling_watch(self):
+        self._set_runtime_state(monitor_mode="polling")
         while not self.stop_event.is_set():
             settings = self.settings_manager.load()
             if not settings.get("auto_watch") or not settings.get("source_dir"):
@@ -678,35 +811,233 @@ class FolderWatcher:
                 self._scan_once(settings)
             except Exception as exc:
                 self.last_error = str(exc)
+                self._set_runtime_state(phase="error", message=f"自动监控异常：{exc}")
             self.last_scan = datetime.now().isoformat(timespec="seconds")
             self.stop_event.wait(max(1, int(settings.get("watch_interval", 3))))
+
+    def _run_event_watch(self, process_existing: bool):
+        settings = self.settings_manager.load()
+        if not settings.get("source_dir"):
+            self._set_runtime_state(phase="error", message="未设置源文件夹")
+            return
+        source = Path(settings["source_dir"]).expanduser().resolve()
+        if not source.exists() or not source.is_dir():
+            self._set_runtime_state(phase="error", message="源文件夹不存在")
+            return
+
+        self._set_runtime_state(
+            monitor_mode="event",
+            phase="starting",
+            message="正在启动事件监控",
+            pending_count=0,
+            batch_total=0,
+            batch_progress=0,
+            current_file="",
+        )
+
+        if process_existing:
+            try:
+                self._scan_once(settings)
+            except Exception as exc:
+                self.last_error = str(exc)
+                self._set_runtime_state(phase="error", message=f"启动扫描异常：{exc}")
+
+        pending: dict[Path, float] = {}
+        observer = Observer()
+        handler = ImageEventHandler(self.event_queue)
+        observer.schedule(handler, str(source), recursive=bool(settings.get("recursive", True)))
+        self.observer = observer
+        observer.start()
+        self.log(f"自动监控使用事件模式（watchdog/inotify）：{source}")
+        if not process_existing:
+            self._set_runtime_state(
+                phase="idle",
+                message="已忽略启动前已有文件，等待新增/修改",
+                scan_count=0,
+            )
+
+        try:
+            while not self.stop_event.is_set():
+                settings = self.settings_manager.load()
+                if not settings.get("auto_watch"):
+                    self.stop_event.wait(1)
+                    continue
+
+                now = time.monotonic()
+                try:
+                    while True:
+                        path = self.event_queue.get_nowait()
+                        pending[path.expanduser().resolve()] = now
+                except Empty:
+                    pass
+
+                ready = [
+                    path
+                    for path, first_seen in pending.items()
+                    if now - first_seen >= self.event_debounce_seconds
+                ]
+                if ready:
+                    for path in ready:
+                        pending.pop(path, None)
+                    try:
+                        self._process_paths(settings, ready, source_total=None)
+                    except Exception as exc:
+                        self.last_error = str(exc)
+                        self._set_runtime_state(phase="error", message=f"自动监控异常：{exc}")
+                    self.last_scan = datetime.now().isoformat(timespec="seconds")
+                    continue
+
+                self._set_runtime_state(
+                    phase="idle",
+                    message="自动监控运行中，等待新增/修改图片",
+                    pending_count=len(pending),
+                    batch_total=0,
+                    batch_progress=0,
+                    current_file="",
+                )
+                self.stop_event.wait(0.5)
+        finally:
+            observer.stop()
+            observer.join(timeout=2)
+            self.observer = None
 
     def _scan_once(self, settings: dict[str, Any]):
         source_dir = settings["source_dir"]
         output_dir_acg = settings.get("output_dir_acg", "")
         output_dir_non_acg = settings.get("output_dir_non_acg", "")
+        self._set_runtime_state(
+            phase="scanning",
+            message="正在扫描源文件夹",
+            scan_count=0,
+            pending_count=0,
+            batch_total=0,
+            batch_progress=0,
+            current_file="",
+        )
+
+        def scan_progress(found, _):
+            self._set_runtime_state(scan_count=found, message=f"正在扫描源文件夹：{found} 张")
+
         paths = self.processor.scan_images(
             source_dir,
             recursive=settings.get("recursive", True),
             output_dirs=[output_dir_acg, output_dir_non_acg],
+            progress_callback=scan_progress,
         )
+        self._process_paths(settings, paths, source_total=len(paths))
+
+    def _is_output_path(self, path: Path, settings: dict[str, Any]) -> bool:
+        source_dir = settings.get("source_dir", "")
+        if not source_dir:
+            return False
+        source_root = Path(source_dir).expanduser().resolve()
+        outputs = [
+            Path(output_dir).expanduser().resolve()
+            for output_dir in (
+                settings.get("output_dir_acg", ""),
+                settings.get("output_dir_non_acg", ""),
+            )
+            if output_dir
+        ]
+        nested_outputs = [
+            output
+            for output in outputs
+            if output != source_root and source_root in output.parents
+        ]
+        return any(output == path or output in path.parents for output in nested_outputs)
+
+    def _wait_for_stable_fingerprint(self, path: Path) -> str | None:
+        last_signature = None
+        stable_count = 0
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not self.stop_event.is_set():
+            try:
+                if path.suffix.lower() not in IMAGE_EXTENSIONS or not path.is_file():
+                    return None
+                signature = self._fingerprint(path)
+            except OSError:
+                time.sleep(0.5)
+                continue
+            if signature == last_signature:
+                stable_count += 1
+                if stable_count >= 2:
+                    return signature
+            else:
+                last_signature = signature
+                stable_count = 0
+            time.sleep(0.5)
+        return last_signature
+
+    def _process_paths(
+        self,
+        settings: dict[str, Any],
+        paths: list[Path],
+        source_total: int | None = None,
+    ):
+        source_dir = settings["source_dir"]
+        output_dir_acg = settings.get("output_dir_acg", "")
+        output_dir_non_acg = settings.get("output_dir_non_acg", "")
         fingerprints = {}
+        candidates: list[Path] = []
+        seen: set[str] = set()
         for path in paths:
             try:
-                fingerprints[str(path)] = self._fingerprint(path)
+                resolved = path.expanduser().resolve()
             except OSError:
                 continue
+            path_key = str(resolved)
+            if path_key in seen:
+                continue
+            seen.add(path_key)
+            if self._is_output_path(resolved, settings):
+                continue
+            signature = self._wait_for_stable_fingerprint(resolved)
+            if not signature:
+                continue
+            candidates.append(resolved)
+            fingerprints[path_key] = signature
+        current_paths = set(fingerprints)
+        source_root = Path(source_dir).expanduser().resolve()
+        if source_total is not None:
+            with self.lock:
+                self.processed = {
+                    path: signature
+                    for path, signature in self.processed.items()
+                    if not Path(path).is_relative_to(source_root) or path in current_paths
+                }
         new_paths = [
             path
-            for path in paths
+            for path in candidates
             if self.processed.get(str(path)) != fingerprints.get(str(path))
         ]
         if not new_paths:
+            message = (
+                f"未发现新增图片，已扫描 {source_total} 张"
+                if source_total is not None
+                else "收到文件变化，但没有可处理的新图片"
+            )
+            self._set_runtime_state(
+                phase="idle",
+                message=message,
+                scan_count=source_total if source_total is not None else self.scan_count,
+                pending_count=0,
+                batch_total=0,
+                batch_progress=0,
+                current_file="",
+            )
             return
+        self._set_runtime_state(
+            phase="processing",
+            message=f"发现 {len(new_paths)} 张新增/修改图片，准备识别",
+            pending_count=len(new_paths),
+            batch_total=len(new_paths),
+            batch_progress=0,
+        )
         self.log(f"自动监控发现 {len(new_paths)} 张新图片或已修改图片")
 
         def watch_status(event, path, result):
             if event == "start":
+                self._set_runtime_state(phase="processing", current_file=path.name)
                 self.log(f"自动监控识别中：{path}")
                 return
             if event == "error":
@@ -715,6 +1046,13 @@ class FolderWatcher:
             label = "ACG" if result.get("is_acg") else "非 ACG"
             confidence = float(result.get("confidence", 0)) * 100
             self.log(f"自动监控识别完成：{path.name} -> {label} · {confidence:.2f}%")
+
+        def watch_result(path, result):
+            with self.lock:
+                self.batch_progress += 1
+                self.pending_count = max(0, self.batch_total - self.batch_progress)
+                self.current_file = path.name
+                self.message = f"自动监控处理中 {self.batch_progress}/{self.batch_total}"
 
         results = self.processor.classify_and_move(
             new_paths,
@@ -727,6 +1065,7 @@ class FolderWatcher:
             auto_move=bool(settings.get("auto_move_watch", True)),
             move_mode=settings.get("move_mode", "move"),
             status_callback=watch_status,
+            result_callback=watch_result,
         )
         with self.lock:
             self.processed_count += len(results)
@@ -762,6 +1101,12 @@ class FolderWatcher:
                 signature = fingerprints.get(str(path))
                 if signature:
                     self.processed[str(path)] = signature
+            self.phase = "idle"
+            self.message = f"自动监控本轮完成，共处理 {len(results)} 张"
+            self.pending_count = 0
+            self.batch_total = 0
+            self.batch_progress = 0
+            self.current_file = ""
             self._save_state()
 
 

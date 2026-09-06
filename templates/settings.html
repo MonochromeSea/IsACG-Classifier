@@ -82,7 +82,7 @@
             </label>
 
             <label class="field">
-              <span>监控间隔（秒）</span>
+              <span>轮询间隔（秒）</span>
               <input id="watchIntervalInput" class="number-control" type="number" min="1" max="60" value="3" />
             </label>
 
@@ -121,12 +121,34 @@
             <input id="watchAutoMoveInput" type="checkbox" checked />
             <span>监控识别后自动移动</span>
           </label>
+          <label class="field">
+            <span>启动监控时</span>
+            <div class="select-wrap">
+              <select id="watchInitialModeSelect" class="select-control">
+                <option value="new">忽略已有文件，仅处理新增/修改</option>
+                <option value="all">处理所有未处理文件</option>
+              </select>
+            </div>
+          </label>
           <div class="batch-actions">
             <button id="startWatcherButton" class="primary-button" type="button">启动监控</button>
             <button id="stopWatcherButton" class="ghost-button" type="button" disabled>停止监控</button>
           </div>
+          <div class="watcher-progress-panel" id="watcherProgressPanel">
+            <div class="task-progress-heading">
+              <span id="watcherMessage">监控未运行</span>
+              <span id="watcherProgressText">0/0</span>
+            </div>
+            <div class="task-progress-track">
+              <span id="watcherProgressFill" class="task-progress-fill"></span>
+            </div>
+          </div>
           <div class="watcher-summary">
             <span>已自动处理：<strong id="watcherProcessed">0</strong></span>
+            <span>本轮扫描：<strong id="watcherScanned">0</strong></span>
+            <span>待处理：<strong id="watcherPending">0</strong></span>
+            <span>当前文件：<strong id="watcherCurrentFile">暂无</strong></span>
+            <span>监控模式：<strong id="watcherMode">暂无</strong></span>
             <span>最近扫描：<strong id="watcherLastScan">暂无</strong></span>
           </div>
         </div>
