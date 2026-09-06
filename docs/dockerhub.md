@@ -14,7 +14,7 @@ Settings -> Secrets and variables -> Actions -> Repository secrets
 
 | Secret | 说明 |
 | --- | --- |
-| `DOCKERHUB_USERNAME` | Docker Hub 用户名，例如 `monomm` |
+| `DOCKERHUB_USERNAME` | Docker Hub 登录用户名，例如 `monomm` |
 | `DOCKERHUB_TOKEN` | Docker Hub Access Token |
 
 ## 触发构建
@@ -27,51 +27,50 @@ Settings -> Secrets and variables -> Actions -> Repository secrets
 
 触发方式：
 
-- 推送到 `main`
 - 推送 `v*` tag，例如 `v0.1.0`
-- 在 GitHub Actions 页面手动运行
+
+普通文件改动或推送到 `main` 不会构建或推送 Docker Hub 镜像。
 
 ## 镜像标签
 
 CPU 镜像：
 
 ```text
-DOCKERHUB_USERNAME/isacg-classifier:latest
-DOCKERHUB_USERNAME/isacg-classifier:cpu
-DOCKERHUB_USERNAME/isacg-classifier:cpu-<git-sha>
-DOCKERHUB_USERNAME/isacg-classifier:v0.1.0
+monomm/isacg-classifier:v0.1.0
 ```
 
 Vulkan/WebGPU 镜像：
 
 ```text
-DOCKERHUB_USERNAME/isacg-classifier:vulkan
-DOCKERHUB_USERNAME/isacg-classifier:vulkan-<git-sha>
-DOCKERHUB_USERNAME/isacg-classifier:v0.1.0-vulkan
+monomm/isacg-classifier-vulkan:v0.1.0
 ```
+
+Docker Hub tag 与 GitHub tag 保持一致。CPU 和 Vulkan 使用两个 Docker Hub 仓库区分镜像类型，避免同一个 tag 被两个不同镜像互相覆盖。
 
 ## 使用预构建镜像
 
 CPU 版本：
 
 ```bash
+echo "ISACG_VERSION=v0.1.0" > .env
 docker compose -f docker-compose.yml -f docker-compose.image.yml up -d
 ```
 
 Vulkan/WebGPU 版本：
 
 ```bash
+echo "ISACG_VERSION=v0.1.0" > .env
 docker compose -f docker-compose.yml -f docker-compose.vulkan.yml -f docker-compose.image.vulkan.yml up -d
 ```
 
-如果镜像不在 `monomm/isacg-classifier`，在 `.env` 中覆盖：
+如果镜像不在 `monomm/isacg-classifier`，在 `.env` 中覆盖完整镜像名：
 
 ```dotenv
-ISACG_IMAGE=your-dockerhub-name/isacg-classifier:latest
+ISACG_IMAGE=your-dockerhub-name/isacg-classifier:v0.1.0
 ```
 
 Vulkan 版则使用：
 
 ```dotenv
-ISACG_IMAGE=your-dockerhub-name/isacg-classifier:vulkan
+ISACG_IMAGE=your-dockerhub-name/isacg-classifier-vulkan:v0.1.0
 ```

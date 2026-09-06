@@ -1,4 +1,4 @@
 services:
   isacg:
-    image: "${ISACG_IMAGE:-monomm/isacg-classifier:vulkan}"
+    image: "${ISACG_IMAGE:-monomm/isacg-classifier-vulkan:${ISACG_VERSION:-v0.1.0}}"
     build: null

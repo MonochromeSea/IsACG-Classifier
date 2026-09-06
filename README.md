@@ -65,7 +65,7 @@ storage/
 ```yaml
 services:
   isacg:
-    image: monomm/isacg-classifier:latest
+    image: monomm/isacg-classifier:v0.1.0
     container_name: isacg-classifier
     restart: unless-stopped
     ports:
@@ -124,6 +124,7 @@ docker compose logs -f isacg
 如果使用 Docker Hub 预构建镜像：
 
 ```bash
+echo "ISACG_VERSION=v0.1.0" > .env
 docker compose -f docker-compose.yml -f docker-compose.image.yml up -d
 ```
 
@@ -137,6 +138,7 @@ docker compose -f docker-compose.yml -f docker-compose.vulkan.yml logs -f isacg
 使用 Docker Hub 预构建 Vulkan 镜像：
 
 ```bash
+echo "ISACG_VERSION=v0.1.0" > .env
 docker compose -f docker-compose.yml -f docker-compose.vulkan.yml -f docker-compose.image.vulkan.yml up -d
 ```
 
