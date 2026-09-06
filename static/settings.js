@@ -10,6 +10,7 @@ const state = {
   pageSize: 20,
   logs: [],
   watcherLogCount: 0,
+  watcherLogKey: "",
   jobLogKeys: {},
   activeJobId: null,
   classifyRunning: false,
@@ -827,7 +828,7 @@ function updateWatcherUI(status) {
   const progress = Number(status.batch_progress || 0);
   const total = Number(status.batch_total || 0);
   const pending = Number(status.pending_count || 0);
-  const working = status.running && (["baselining", "scanning", "processing", "starting"].includes(status.phase) || pending > 0);
+  const working = status.running && (["baselining", "filtering", "scanning", "processing", "starting"].includes(status.phase) || pending > 0);
   const modeLabels = {
     event: "事件模式",
     polling: "轮询模式",
@@ -854,8 +855,14 @@ async function refreshWatcherStatus() {
     const status = await api("/api/watcher/status");
     updateWatcherUI(status);
     const watcherLogs = status.logs || [];
-    if (watcherLogs.length > state.watcherLogCount) {
-      appendLogs(watcherLogs.slice(state.watcherLogCount));
+    if (watcherLogs.length) {
+      let newLogs = watcherLogs;
+      if (state.watcherLogKey) {
+        const previousIndex = watcherLogs.findIndex((entry) => logKey(entry) === state.watcherLogKey);
+        newLogs = previousIndex >= 0 ? watcherLogs.slice(previousIndex + 1) : watcherLogs.slice(-20);
+      }
+      appendLogs(newLogs);
+      state.watcherLogKey = logKey(watcherLogs[watcherLogs.length - 1]);
       state.watcherLogCount = watcherLogs.length;
     }
   } catch {

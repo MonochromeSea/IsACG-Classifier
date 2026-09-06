@@ -739,7 +739,7 @@ class FolderWatcher:
                 "batch_progress": self.batch_progress,
                 "current_file": self.current_file,
                 "has_pending_task": self.pending_count > 0
-                or self.phase in {"baselining", "scanning", "processing", "starting"},
+                or self.phase in {"baselining", "filtering", "scanning", "processing", "starting"},
                 "recent": self.recent[-20:],
                 "logs": self.logs[-100:],
             }
@@ -977,10 +977,99 @@ class FolderWatcher:
         source_dir = settings["source_dir"]
         output_dir_acg = settings.get("output_dir_acg", "")
         output_dir_non_acg = settings.get("output_dir_non_acg", "")
-        fingerprints = {}
-        candidates: list[Path] = []
+        full_scan = source_total is not None
+        batch_size = max(1, min(int(settings.get("thread_count", 2)) * 2, 16))
+        scanned_paths: set[str] = set()
+        processed_total = 0
+        discovered_total = 0
+        batch: list[Path] = []
+        batch_fingerprints: dict[str, str] = {}
         seen: set[str] = set()
+
+        def process_batch(new_paths: list[Path], fingerprints: dict[str, str]) -> int:
+            if not new_paths:
+                return 0
+            self._set_runtime_state(
+                phase="processing",
+                message=f"发现 {len(new_paths)} 张新增/修改图片，开始识别",
+                pending_count=len(new_paths),
+                batch_total=len(new_paths),
+                batch_progress=0,
+            )
+            self.log(f"自动监控发现 {len(new_paths)} 张新图片或已修改图片")
+
+            def watch_status(event, path, result):
+                if event == "start":
+                    self._set_runtime_state(phase="processing", current_file=path.name)
+                    self.log(f"自动监控识别中：{path}")
+                    return
+                if event == "error":
+                    self.log(f"自动监控识别失败：{path.name} · {result.get('error', '未知错误')}")
+                    return
+                label = "ACG" if result.get("is_acg") else "非 ACG"
+                confidence = float(result.get("confidence", 0)) * 100
+                self.log(f"自动监控识别完成：{path.name} -> {label} · {confidence:.2f}%")
+
+            def watch_result(path, result):
+                with self.lock:
+                    self.batch_progress += 1
+                    self.pending_count = max(0, self.batch_total - self.batch_progress)
+                    self.current_file = path.name
+                    self.message = f"自动监控处理中 {self.batch_progress}/{self.batch_total}"
+
+            results = self.processor.classify_and_move(
+                new_paths,
+                model_id=settings.get("model", "v1s"),
+                thread_count=settings.get("thread_count", 2),
+                source_dir=source_dir,
+                output_dir_acg=output_dir_acg,
+                output_dir_non_acg=output_dir_non_acg,
+                path_layers=int(settings.get("path_layers", 0)),
+                auto_move=bool(settings.get("auto_move_watch", True)),
+                move_mode=settings.get("move_mode", "move"),
+                status_callback=watch_status,
+                result_callback=watch_result,
+            )
+            with self.lock:
+                self.processed_count += len(results)
+                self.recent.extend(results)
+                self.recent = self.recent[-100:]
+                for result in results:
+                    if result.get("error"):
+                        self.logs.append(
+                            {
+                                "time": time.time(),
+                                "message": f"自动监控识别失败：{result.get('filename', '未知文件')}",
+                            }
+                        )
+                    else:
+                        label = "ACG" if result.get("is_acg") else "非 ACG"
+                        move = result.get("move") or {}
+                        if move.get("moved"):
+                            self.logs.append(
+                                {
+                                    "time": time.time(),
+                                    "message": f"自动监控已处理：{result.get('filename', '未知文件')} -> {label}",
+                                }
+                            )
+                        else:
+                            self.logs.append(
+                                {
+                                    "time": time.time(),
+                                    "message": f"自动监控已识别：{result.get('filename', '未知文件')} -> {label}（未移动）",
+                                }
+                            )
+                self.logs = self.logs[-100:]
+                for path in new_paths:
+                    signature = fingerprints.get(str(path))
+                    if signature:
+                        self.processed[str(path)] = signature
+                self._save_state()
+            return len(results)
+
         for path in paths:
+            if self.stop_event.is_set():
+                break
             try:
                 resolved = path.expanduser().resolve()
             except OSError:
@@ -991,123 +1080,77 @@ class FolderWatcher:
             seen.add(path_key)
             if self._is_output_path(resolved, settings):
                 continue
-            signature = self._wait_for_stable_fingerprint(resolved)
-            if not signature:
+            if full_scan:
+                try:
+                    if resolved.suffix.lower() not in IMAGE_EXTENSIONS or not resolved.is_file():
+                        continue
+                    signature = self._fingerprint(resolved)
+                except OSError:
+                    continue
+            else:
+                signature = self._wait_for_stable_fingerprint(resolved)
+                if not signature:
+                    continue
+            scanned_paths.add(path_key)
+            discovered_total += 1
+            if self.processed.get(path_key) == signature:
                 continue
-            candidates.append(resolved)
-            fingerprints[path_key] = signature
-        current_paths = set(fingerprints)
+            batch.append(resolved)
+            batch_fingerprints[path_key] = signature
+            if full_scan:
+                self._set_runtime_state(
+                    phase="filtering",
+                    message=f"正在检查未处理图片：{discovered_total}/{source_total}",
+                    scan_count=source_total,
+                    pending_count=len(batch),
+                    batch_total=source_total,
+                    batch_progress=discovered_total,
+                    current_file=resolved.name,
+                )
+            if len(batch) >= batch_size:
+                processed_total += process_batch(batch, batch_fingerprints)
+                batch = []
+                batch_fingerprints = {}
+
+        if batch:
+            processed_total += process_batch(batch, batch_fingerprints)
+
         source_root = Path(source_dir).expanduser().resolve()
-        if source_total is not None:
+        if full_scan:
             with self.lock:
                 self.processed = {
                     path: signature
                     for path, signature in self.processed.items()
-                    if not Path(path).is_relative_to(source_root) or path in current_paths
+                    if not Path(path).is_relative_to(source_root) or path in scanned_paths
                 }
-        new_paths = [
-            path
-            for path in candidates
-            if self.processed.get(str(path)) != fingerprints.get(str(path))
-        ]
-        if not new_paths:
+                self._save_state()
+
+        if processed_total == 0:
             message = (
                 f"未发现新增图片，已扫描 {source_total} 张"
-                if source_total is not None
+                if full_scan
                 else "收到文件变化，但没有可处理的新图片"
             )
             self._set_runtime_state(
                 phase="idle",
                 message=message,
-                scan_count=source_total if source_total is not None else self.scan_count,
+                scan_count=source_total if full_scan else self.scan_count,
                 pending_count=0,
                 batch_total=0,
                 batch_progress=0,
                 current_file="",
             )
             return
+
         self._set_runtime_state(
-            phase="processing",
-            message=f"发现 {len(new_paths)} 张新增/修改图片，准备识别",
-            pending_count=len(new_paths),
-            batch_total=len(new_paths),
+            phase="idle",
+            message=f"自动监控本轮完成，共处理 {processed_total} 张",
+            scan_count=source_total if full_scan else self.scan_count,
+            pending_count=0,
+            batch_total=0,
             batch_progress=0,
+            current_file="",
         )
-        self.log(f"自动监控发现 {len(new_paths)} 张新图片或已修改图片")
-
-        def watch_status(event, path, result):
-            if event == "start":
-                self._set_runtime_state(phase="processing", current_file=path.name)
-                self.log(f"自动监控识别中：{path}")
-                return
-            if event == "error":
-                self.log(f"自动监控识别失败：{path.name} · {result.get('error', '未知错误')}")
-                return
-            label = "ACG" if result.get("is_acg") else "非 ACG"
-            confidence = float(result.get("confidence", 0)) * 100
-            self.log(f"自动监控识别完成：{path.name} -> {label} · {confidence:.2f}%")
-
-        def watch_result(path, result):
-            with self.lock:
-                self.batch_progress += 1
-                self.pending_count = max(0, self.batch_total - self.batch_progress)
-                self.current_file = path.name
-                self.message = f"自动监控处理中 {self.batch_progress}/{self.batch_total}"
-
-        results = self.processor.classify_and_move(
-            new_paths,
-            model_id=settings.get("model", "v1s"),
-            thread_count=settings.get("thread_count", 2),
-            source_dir=source_dir,
-            output_dir_acg=output_dir_acg,
-            output_dir_non_acg=output_dir_non_acg,
-            path_layers=int(settings.get("path_layers", 0)),
-            auto_move=bool(settings.get("auto_move_watch", True)),
-            move_mode=settings.get("move_mode", "move"),
-            status_callback=watch_status,
-            result_callback=watch_result,
-        )
-        with self.lock:
-            self.processed_count += len(results)
-            self.recent.extend(results)
-            self.recent = self.recent[-100:]
-            for result in results:
-                if result.get("error"):
-                    self.logs.append(
-                        {
-                            "time": time.time(),
-                            "message": f"自动监控识别失败：{result.get('filename', '未知文件')}",
-                        }
-                    )
-                else:
-                    label = "ACG" if result.get("is_acg") else "非 ACG"
-                    move = result.get("move") or {}
-                    if move.get("moved"):
-                        self.logs.append(
-                            {
-                                "time": time.time(),
-                                "message": f"自动监控已处理：{result.get('filename', '未知文件')} -> {label}",
-                            }
-                        )
-                    else:
-                        self.logs.append(
-                            {
-                                "time": time.time(),
-                                "message": f"自动监控已识别：{result.get('filename', '未知文件')} -> {label}（未移动）",
-                            }
-                        )
-            self.logs = self.logs[-100:]
-            for path in new_paths:
-                signature = fingerprints.get(str(path))
-                if signature:
-                    self.processed[str(path)] = signature
-            self.phase = "idle"
-            self.message = f"自动监控本轮完成，共处理 {len(results)} 张"
-            self.pending_count = 0
-            self.batch_total = 0
-            self.batch_progress = 0
-            self.current_file = ""
-            self._save_state()
 
 
 settings_manager = SettingsManager(Path(__file__).resolve().parent / "config" / "settings.json")
