@@ -201,6 +201,7 @@ async function pollJob(jobId, onDone) {
 }
 
 function currentSettings() {
+  const watchStartMode = watchInitialModeSelect ? watchInitialModeSelect.value : "unprocessed";
   return {
     source_dir: sourceDirInput.value.trim(),
     output_dir_acg: acgOutputDirInput.value.trim(),
@@ -213,7 +214,8 @@ function currentSettings() {
     recursive: recursiveInput.checked,
     auto_move: autoMoveInput.checked,
     auto_move_watch: watchAutoMoveInput.checked,
-    watch_existing_files: watchInitialModeSelect ? watchInitialModeSelect.value === "all" : true,
+    watch_start_mode: watchStartMode,
+    watch_existing_files: watchStartMode !== "new",
   };
 }
 
@@ -232,7 +234,10 @@ function populateSettings(settings) {
   autoMoveInput.checked = settings.auto_move !== false;
   watchAutoMoveInput.checked = settings.auto_move_watch !== false;
   if (watchInitialModeSelect) {
-    watchInitialModeSelect.value = settings.watch_existing_files === false ? "new" : "all";
+    const watchStartMode = settings.watch_start_mode || (settings.watch_existing_files === false ? "new" : "unprocessed");
+    watchInitialModeSelect.value = ["new", "unprocessed", "all"].includes(watchStartMode)
+      ? watchStartMode
+      : "unprocessed";
   }
 }
 
@@ -872,11 +877,10 @@ async function refreshWatcherStatus() {
 
 async function startWatcher() {
   try {
-    const processExisting = watchInitialModeSelect ? watchInitialModeSelect.value === "all" : true;
     const status = await api("/api/watcher/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...currentSettings(), watch_existing_files: processExisting }),
+      body: JSON.stringify(currentSettings()),
     });
     updateWatcherUI(status.status || status);
     refreshWatcherStatus();

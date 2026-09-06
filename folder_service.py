@@ -25,6 +25,7 @@ logger = logging.getLogger("isacg")
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 MOVE_MODES = {"move", "copy", "hardlink", "symlink"}
+WATCH_START_MODES = {"new", "unprocessed", "all"}
 WATCHDOG_AVAILABLE = FileSystemEventHandler is not None and Observer is not None
 
 
@@ -67,6 +68,7 @@ DEFAULT_SETTINGS = {
     "recursive": True,
     "auto_move": True,
     "auto_move_watch": True,
+    "watch_start_mode": "unprocessed",
     "watch_existing_files": True,
     "move_mode": "move",
     "model": "v1s",
@@ -104,7 +106,11 @@ class SettingsManager:
                 merged.get("move_mode") if merged.get("move_mode") in MOVE_MODES else "move"
             )
             merged["auto_move_watch"] = bool(merged.get("auto_move_watch", True))
-            merged["watch_existing_files"] = bool(merged.get("watch_existing_files", True))
+            watch_start_mode = str(merged.get("watch_start_mode") or "").strip()
+            if "watch_start_mode" not in data or watch_start_mode not in WATCH_START_MODES:
+                watch_start_mode = "unprocessed" if bool(merged.get("watch_existing_files", True)) else "new"
+            merged["watch_start_mode"] = watch_start_mode
+            merged["watch_existing_files"] = watch_start_mode != "new"
             return merged
 
     def save(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -121,7 +127,11 @@ class SettingsManager:
             clean["recursive"] = bool(clean.get("recursive", True))
             clean["auto_move"] = bool(clean.get("auto_move", True))
             clean["auto_move_watch"] = bool(clean.get("auto_move_watch", True))
-            clean["watch_existing_files"] = bool(clean.get("watch_existing_files", True))
+            watch_start_mode = str(clean.get("watch_start_mode") or "").strip()
+            if "watch_start_mode" not in data or watch_start_mode not in WATCH_START_MODES:
+                watch_start_mode = "unprocessed" if bool(clean.get("watch_existing_files", True)) else "new"
+            clean["watch_start_mode"] = watch_start_mode
+            clean["watch_existing_files"] = watch_start_mode != "new"
             clean["move_mode"] = (
                 clean.get("move_mode") if clean.get("move_mode") in MOVE_MODES else "move"
             )
@@ -678,7 +688,9 @@ class FolderWatcher:
         stat = path.stat()
         return f"{stat.st_size}:{stat.st_mtime_ns}"
 
-    def start(self, process_existing: bool = True):
+    def start(self, start_mode: str = "unprocessed"):
+        if start_mode not in WATCH_START_MODES:
+            start_mode = "unprocessed" if bool(start_mode) else "new"
         with self.lock:
             if self.thread and self.thread.is_alive():
                 return
@@ -689,14 +701,19 @@ class FolderWatcher:
         with self.lock:
             self.thread = threading.Thread(
                 target=self._run,
-                args=(process_existing,),
+                args=(start_mode,),
                 name="folder-watcher",
                 daemon=True,
             )
             self.thread.start()
             self.phase = "idle"
             self.message = "自动监控已启动，等待新增图片"
-            mode = "处理已有文件" if process_existing else "忽略已有文件，仅处理新增/修改"
+            mode_labels = {
+                "new": "忽略已有文件，仅处理新增/修改",
+                "unprocessed": "处理所有未处理文件",
+                "all": "处理所有文件（包括已处理过的）",
+            }
+            mode = mode_labels.get(start_mode, mode_labels["unprocessed"])
             self.log(f"自动监控已启动（{mode}）")
 
     def stop(self):
@@ -786,15 +803,20 @@ class FolderWatcher:
             self._save_state()
         self.log(f"已登记当前已有 {len(paths)} 张图片，后续仅监控新增或修改")
 
-    def _run(self, process_existing: bool = True):
+    def _run(self, start_mode: str = "unprocessed"):
+        if start_mode not in WATCH_START_MODES:
+            start_mode = "unprocessed"
         if WATCHDOG_AVAILABLE:
-            self._run_event_watch(process_existing)
+            self._run_event_watch(start_mode)
             return
 
         self.log("未安装 watchdog，自动监控回退为定时扫描模式")
-        if not process_existing:
+        if start_mode == "new":
             settings = self.settings_manager.load()
             self._baseline_current_files(settings)
+        elif start_mode == "all":
+            settings = self.settings_manager.load()
+            self._scan_once(settings, force_reprocess=True)
         self._run_polling_watch()
 
     def _run_polling_watch(self):
@@ -813,7 +835,7 @@ class FolderWatcher:
             self.last_scan = datetime.now().isoformat(timespec="seconds")
             self.stop_event.wait(max(1, int(settings.get("watch_interval", 3))))
 
-    def _run_event_watch(self, process_existing: bool):
+    def _run_event_watch(self, start_mode: str):
         settings = self.settings_manager.load()
         if not settings.get("source_dir"):
             self._set_runtime_state(phase="error", message="未设置源文件夹")
@@ -833,9 +855,9 @@ class FolderWatcher:
             current_file="",
         )
 
-        if process_existing:
+        if start_mode != "new":
             try:
-                self._scan_once(settings)
+                self._scan_once(settings, force_reprocess=start_mode == "all")
             except Exception as exc:
                 self.last_error = str(exc)
                 self._set_runtime_state(phase="error", message=f"启动扫描异常：{exc}")
@@ -847,7 +869,7 @@ class FolderWatcher:
         self.observer = observer
         observer.start()
         self.log(f"自动监控使用事件模式（watchdog/inotify）：{source}")
-        if not process_existing:
+        if start_mode == "new":
             self._set_runtime_state(
                 phase="idle",
                 message="已忽略启动前已有文件，等待新增/修改",
@@ -899,10 +921,10 @@ class FolderWatcher:
             observer.join(timeout=2)
             self.observer = None
 
-    def _scan_once(self, settings: dict[str, Any]):
+    def _scan_once(self, settings: dict[str, Any], force_reprocess: bool = False):
         self._set_runtime_state(
             phase="scanning",
-            message="正在扫描源文件夹",
+            message="正在扫描源文件夹" if not force_reprocess else "正在扫描源文件夹，准备重新处理全部图片",
             scan_count=0,
             pending_count=0,
             batch_total=0,
@@ -911,12 +933,18 @@ class FolderWatcher:
         )
 
         def scan_progress(found, _):
-                self._set_runtime_state(scan_count=found, message=f"正在扫描源文件夹：{found} 张")
+                message = (
+                    f"正在扫描源文件夹：{found} 张"
+                    if not force_reprocess
+                    else f"正在扫描源文件夹：{found} 张，全部加入处理"
+                )
+                self._set_runtime_state(scan_count=found, message=message)
 
         self._process_paths(
             settings,
             self._iter_scan_paths(settings, scan_progress),
             full_scan_mode=True,
+            force_reprocess=force_reprocess,
         )
 
     def _iter_scan_paths(self, settings: dict[str, Any], progress_callback=None):
@@ -1042,6 +1070,7 @@ class FolderWatcher:
         paths: list[Path],
         source_total: int | None = None,
         full_scan_mode: bool = False,
+        force_reprocess: bool = False,
     ):
         source_dir = settings["source_dir"]
         output_dir_acg = settings.get("output_dir_acg", "")
@@ -1060,14 +1089,15 @@ class FolderWatcher:
         def process_batch(new_paths: list[Path], fingerprints: dict[str, str]) -> int:
             if not new_paths:
                 return 0
+            batch_label = "待处理图片" if force_reprocess else "新增/修改图片"
             self._set_runtime_state(
                 phase="processing",
-                message=f"发现 {len(new_paths)} 张新增/修改图片，开始识别",
+                message=f"发现 {len(new_paths)} 张{batch_label}，开始识别",
                 pending_count=len(new_paths),
                 batch_total=len(new_paths),
                 batch_progress=0,
             )
-            self.log(f"自动监控发现 {len(new_paths)} 张新图片或已修改图片")
+            self.log(f"自动监控发现 {len(new_paths)} 张{batch_label}")
 
             def watch_status(event, path, result):
                 if event == "start":
@@ -1197,12 +1227,14 @@ class FolderWatcher:
                     continue
             scanned_paths.add(path_key)
             discovered_total += 1
-            if self.processed.get(path_key) == signature:
+            if not force_reprocess and self.processed.get(path_key) == signature:
                 continue
             if full_scan and processing_queue is not None:
                 processing_queue.put((resolved, signature))
                 queued_count = processing_queue.qsize()
-                if source_total is None:
+                if force_reprocess:
+                    message = f"正在加入全部图片：已检查 {discovered_total} 张，待识别 {queued_count} 张"
+                elif source_total is None:
                     message = f"正在检查未处理图片：已检查 {discovered_total} 张，待识别 {queued_count} 张"
                 else:
                     message = f"正在检查未处理图片：{discovered_total}/{source_total}，待识别 {queued_count} 张"

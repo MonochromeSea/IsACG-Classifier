@@ -363,9 +363,11 @@ def update_settings():
     payload = request.get_json(silent=True) or {}
     current = settings_manager.load()
     current.update(payload)
+    if "watch_existing_files" in payload and "watch_start_mode" not in payload:
+        current["watch_start_mode"] = "unprocessed" if bool(payload.get("watch_existing_files")) else "new"
     saved = settings_manager.save(current)
     if saved.get("auto_watch"):
-        folder_watcher.start(process_existing=bool(saved.get("watch_existing_files", True)))
+        folder_watcher.start(start_mode=saved.get("watch_start_mode", "unprocessed"))
     else:
         folder_watcher.stop()
     return jsonify({"success": True, "settings": saved})
@@ -882,9 +884,11 @@ def start_watcher():
     payload = request.get_json(silent=True) or {}
     settings = settings_manager.load()
     settings.update(payload)
+    if "watch_existing_files" in payload and "watch_start_mode" not in payload:
+        settings["watch_start_mode"] = "unprocessed" if bool(payload.get("watch_existing_files")) else "new"
     settings["auto_watch"] = True
     saved = settings_manager.save(settings)
-    folder_watcher.start(process_existing=bool(saved.get("watch_existing_files", True)))
+    folder_watcher.start(start_mode=saved.get("watch_start_mode", "unprocessed"))
     return jsonify({"success": True, "status": folder_watcher.status()})
 
 
