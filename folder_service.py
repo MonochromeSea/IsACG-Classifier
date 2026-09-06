@@ -6,7 +6,7 @@ import string
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Any
@@ -27,6 +27,11 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 MOVE_MODES = {"move", "copy", "hardlink", "symlink"}
 WATCH_START_MODES = {"new", "unprocessed", "all"}
 WATCHDOG_AVAILABLE = FileSystemEventHandler is not None and Observer is not None
+BEIJING_TZ = timezone(timedelta(hours=8), "Asia/Shanghai")
+
+
+def beijing_now_iso() -> str:
+    return datetime.now(BEIJING_TZ).replace(tzinfo=None).isoformat(timespec="seconds")
 
 
 class ProcessingCancelled(Exception):
@@ -640,6 +645,7 @@ class FolderWatcher:
         self.event_queue: Queue[Path] = Queue()
         self.observer = None
         self.processed_count = 0
+        self.last_classified = None
         self.last_scan = None
         self.last_error = ""
         self.phase = "idle"
@@ -697,6 +703,9 @@ class FolderWatcher:
             self.stop_event.clear()
             self.event_queue = Queue()
             self.processed_count = 0
+            self.scan_count = 0
+            self.last_classified = None
+            self.last_scan = None
             self.recent = []
         with self.lock:
             self.thread = threading.Thread(
@@ -742,7 +751,8 @@ class FolderWatcher:
             return {
                 "running": bool(self.thread and self.thread.is_alive()),
                 "processed_count": self.processed_count,
-                "last_scan": self.last_scan,
+                "last_classified": self.last_classified,
+                "last_scan": self.last_classified,
                 "last_error": self.last_error,
                 "phase": self.phase,
                 "message": self.message,
@@ -797,7 +807,7 @@ class FolderWatcher:
                 continue
         with self.lock:
             self.processed.update(fingerprints)
-            self.scan_count = len(paths)
+            self.scan_count = 0
             self.phase = "idle"
             self.message = f"已忽略当前已有 {len(paths)} 张图片，等待新增/修改"
             self._save_state()
@@ -832,7 +842,6 @@ class FolderWatcher:
             except Exception as exc:
                 self.last_error = str(exc)
                 self._set_runtime_state(phase="error", message=f"自动监控异常：{exc}")
-            self.last_scan = datetime.now().isoformat(timespec="seconds")
             self.stop_event.wait(max(1, int(settings.get("watch_interval", 3))))
 
     def _run_event_watch(self, start_mode: str):
@@ -904,7 +913,6 @@ class FolderWatcher:
                     except Exception as exc:
                         self.last_error = str(exc)
                         self._set_runtime_state(phase="error", message=f"自动监控异常：{exc}")
-                    self.last_scan = datetime.now().isoformat(timespec="seconds")
                     continue
 
                 self._set_runtime_state(
@@ -1085,6 +1093,7 @@ class FolderWatcher:
         seen: set[str] = set()
         processing_queue: Queue[tuple[Path, str] | None] | None = Queue() if full_scan else None
         worker_error: Exception | None = None
+        base_scan_count = self.scan_count
 
         def process_batch(new_paths: list[Path], fingerprints: dict[str, str]) -> int:
             if not new_paths:
@@ -1134,6 +1143,9 @@ class FolderWatcher:
             )
             with self.lock:
                 self.processed_count += len(results)
+                if results:
+                    self.last_classified = beijing_now_iso()
+                    self.last_scan = self.last_classified
                 self.recent.extend(results)
                 self.recent = self.recent[-100:]
                 for result in results:
@@ -1227,6 +1239,11 @@ class FolderWatcher:
                     continue
             scanned_paths.add(path_key)
             discovered_total += 1
+            if not full_scan:
+                self._set_runtime_state(
+                    scan_count=base_scan_count + discovered_total,
+                    current_file=resolved.name,
+                )
             if not force_reprocess and self.processed.get(path_key) == signature:
                 continue
             if full_scan and processing_queue is not None:
@@ -1288,7 +1305,7 @@ class FolderWatcher:
                 message=message,
                 scan_count=(source_total if source_total is not None else len(scanned_paths))
                 if full_scan
-                else self.scan_count,
+                else base_scan_count + len(scanned_paths),
                 pending_count=0,
                 batch_total=0,
                 batch_progress=0,
@@ -1301,7 +1318,7 @@ class FolderWatcher:
             message=f"自动监控本轮完成，共处理 {processed_total} 张",
             scan_count=(source_total if source_total is not None else len(scanned_paths))
             if full_scan
-            else self.scan_count,
+            else base_scan_count + len(scanned_paths),
             pending_count=0,
             batch_total=0,
             batch_progress=0,

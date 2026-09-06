@@ -843,7 +843,7 @@ function updateWatcherUI(status) {
   watcherState.classList.toggle("running", status.running);
   watcherState.classList.toggle("working", working);
   watcherProcessed.textContent = status.processed_count || 0;
-  watcherLastScan.textContent = status.last_scan || "暂无";
+  watcherLastScan.textContent = status.last_classified || status.last_scan || "暂无";
   watcherScanned.textContent = status.scan_count || 0;
   watcherPending.textContent = pending;
   watcherCurrentFile.textContent = status.current_file || "暂无";

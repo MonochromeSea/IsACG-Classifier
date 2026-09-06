@@ -12,6 +12,7 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: "8080"
+      TZ: "${TZ:-CST-8}"
       STORAGE_DIR: /app/storage
       ISACG_DEVICE: CPU
       ISACG_PRELOAD_MODELS: "${ISACG_PRELOAD_MODELS:-v1s}"

@@ -18,6 +18,12 @@ BASE_DIR = Path(__file__).resolve().parent
 MODEL_DIR = BASE_DIR / "models"
 STORAGE_DIR = Path(os.environ.get("STORAGE_DIR", str(BASE_DIR / "storage"))).resolve()
 
+
+def _beijing_log_time(timestamp):
+    return time.gmtime(timestamp + 8 * 60 * 60)
+
+
+logging.Formatter.converter = _beijing_log_time
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s %(levelname)s %(message)s",
