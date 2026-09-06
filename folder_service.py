@@ -656,10 +656,7 @@ class FolderWatcher:
                 for path, signature in processed.items()
                 if path and signature
             }
-        try:
-            self.processed_count = max(0, int(data.get("processed_count", 0) or 0))
-        except (TypeError, ValueError):
-            self.processed_count = 0
+        self.processed_count = 0
 
     def _save_state(self):
         try:
@@ -667,7 +664,6 @@ class FolderWatcher:
                 json.dumps(
                     {
                         "processed": self.processed,
-                        "processed_count": self.processed_count,
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -688,6 +684,8 @@ class FolderWatcher:
                 return
             self.stop_event.clear()
             self.event_queue = Queue()
+            self.processed_count = 0
+            self.recent = []
         with self.lock:
             self.thread = threading.Thread(
                 target=self._run,
@@ -902,9 +900,6 @@ class FolderWatcher:
             self.observer = None
 
     def _scan_once(self, settings: dict[str, Any]):
-        source_dir = settings["source_dir"]
-        output_dir_acg = settings.get("output_dir_acg", "")
-        output_dir_non_acg = settings.get("output_dir_non_acg", "")
         self._set_runtime_state(
             phase="scanning",
             message="正在扫描源文件夹",
@@ -916,15 +911,88 @@ class FolderWatcher:
         )
 
         def scan_progress(found, _):
-            self._set_runtime_state(scan_count=found, message=f"正在扫描源文件夹：{found} 张")
+                self._set_runtime_state(scan_count=found, message=f"正在扫描源文件夹：{found} 张")
 
-        paths = self.processor.scan_images(
-            source_dir,
-            recursive=settings.get("recursive", True),
-            output_dirs=[output_dir_acg, output_dir_non_acg],
-            progress_callback=scan_progress,
+        self._process_paths(
+            settings,
+            self._iter_scan_paths(settings, scan_progress),
+            full_scan_mode=True,
         )
-        self._process_paths(settings, paths, source_total=len(paths))
+
+    def _iter_scan_paths(self, settings: dict[str, Any], progress_callback=None):
+        source = Path(settings["source_dir"]).expanduser().resolve()
+        if not source.exists() or not source.is_dir():
+            return
+
+        outputs = [
+            Path(output_dir).expanduser().resolve()
+            for output_dir in (
+                settings.get("output_dir_acg", ""),
+                settings.get("output_dir_non_acg", ""),
+            )
+            if output_dir
+        ]
+        nested_outputs = [
+            output
+            for output in outputs
+            if output != source and source in output.parents
+        ]
+
+        def is_output_or_inside(path: Path) -> bool:
+            return any(output == path or output in path.parents for output in nested_outputs)
+
+        def should_prune_directory(path: Path) -> bool:
+            return any(output == path or path in output.parents for output in nested_outputs)
+
+        found = 0
+        if settings.get("recursive", True):
+            for root, directories, filenames in os.walk(source, topdown=True, followlinks=False):
+                if self.stop_event.is_set():
+                    return
+                root_path = Path(root)
+                directories[:] = [
+                    name
+                    for name in directories
+                    if not should_prune_directory(root_path / name)
+                ]
+                for filename in filenames:
+                    if self.stop_event.is_set():
+                        return
+                    candidate = root_path / filename
+                    if candidate.suffix.lower() not in IMAGE_EXTENSIONS:
+                        continue
+                    try:
+                        resolved = candidate.resolve()
+                        if not resolved.is_file() or is_output_or_inside(resolved):
+                            continue
+                    except OSError:
+                        continue
+                    found += 1
+                    if progress_callback:
+                        progress_callback(found, None)
+                    yield resolved
+            return
+
+        try:
+            with os.scandir(source) as entries:
+                for entry in entries:
+                    if self.stop_event.is_set():
+                        return
+                    candidate = Path(entry.path)
+                    if candidate.suffix.lower() not in IMAGE_EXTENSIONS:
+                        continue
+                    try:
+                        resolved = candidate.resolve()
+                        if not resolved.is_file() or is_output_or_inside(resolved):
+                            continue
+                    except OSError:
+                        continue
+                    found += 1
+                    if progress_callback:
+                        progress_callback(found, None)
+                    yield resolved
+        except OSError:
+            return
 
     def _is_output_path(self, path: Path, settings: dict[str, Any]) -> bool:
         source_dir = settings.get("source_dir", "")
@@ -973,11 +1041,12 @@ class FolderWatcher:
         settings: dict[str, Any],
         paths: list[Path],
         source_total: int | None = None,
+        full_scan_mode: bool = False,
     ):
         source_dir = settings["source_dir"]
         output_dir_acg = settings.get("output_dir_acg", "")
         output_dir_non_acg = settings.get("output_dir_non_acg", "")
-        full_scan = source_total is not None
+        full_scan = full_scan_mode or source_total is not None
         batch_size = max(1, min(int(settings.get("thread_count", 2)) * 2, 16))
         scanned_paths: set[str] = set()
         processed_total = 0
@@ -985,6 +1054,8 @@ class FolderWatcher:
         batch: list[Path] = []
         batch_fingerprints: dict[str, str] = {}
         seen: set[str] = set()
+        processing_queue: Queue[tuple[Path, str] | None] | None = Queue() if full_scan else None
+        worker_error: Exception | None = None
 
         def process_batch(new_paths: list[Path], fingerprints: dict[str, str]) -> int:
             if not new_paths:
@@ -1029,6 +1100,7 @@ class FolderWatcher:
                 move_mode=settings.get("move_mode", "move"),
                 status_callback=watch_status,
                 result_callback=watch_result,
+                should_stop=lambda: self.stop_event.is_set(),
             )
             with self.lock:
                 self.processed_count += len(results)
@@ -1067,6 +1139,38 @@ class FolderWatcher:
                 self._save_state()
             return len(results)
 
+        def consume_batches():
+            nonlocal processed_total, worker_error
+            queued_batch: list[Path] = []
+            queued_fingerprints: dict[str, str] = {}
+            try:
+                while not self.stop_event.is_set():
+                    item = processing_queue.get()
+                    if item is None:
+                        if queued_batch:
+                            processed_total += process_batch(queued_batch, queued_fingerprints)
+                        return
+                    path, signature = item
+                    queued_batch.append(path)
+                    queued_fingerprints[str(path)] = signature
+                    with self.lock:
+                        self.pending_count = (processing_queue.qsize() if processing_queue else 0) + len(queued_batch)
+                    if len(queued_batch) >= batch_size:
+                        processed_total += process_batch(queued_batch, queued_fingerprints)
+                        queued_batch = []
+                        queued_fingerprints = {}
+            except Exception as exc:
+                worker_error = exc
+
+        worker_thread = None
+        if full_scan and processing_queue is not None:
+            worker_thread = threading.Thread(
+                target=consume_batches,
+                name="folder-watcher-processor",
+                daemon=True,
+            )
+            worker_thread.start()
+
         for path in paths:
             if self.stop_event.is_set():
                 break
@@ -1095,22 +1199,36 @@ class FolderWatcher:
             discovered_total += 1
             if self.processed.get(path_key) == signature:
                 continue
-            batch.append(resolved)
-            batch_fingerprints[path_key] = signature
-            if full_scan:
+            if full_scan and processing_queue is not None:
+                processing_queue.put((resolved, signature))
+                queued_count = processing_queue.qsize()
+                if source_total is None:
+                    message = f"正在检查未处理图片：已检查 {discovered_total} 张，待识别 {queued_count} 张"
+                else:
+                    message = f"正在检查未处理图片：{discovered_total}/{source_total}，待识别 {queued_count} 张"
                 self._set_runtime_state(
                     phase="filtering",
-                    message=f"正在检查未处理图片：{discovered_total}/{source_total}",
-                    scan_count=source_total,
-                    pending_count=len(batch),
-                    batch_total=source_total,
-                    batch_progress=discovered_total,
+                    message=message,
+                    scan_count=discovered_total if source_total is None else source_total,
+                    pending_count=queued_count,
+                    batch_total=source_total or 0,
+                    batch_progress=discovered_total if source_total else 0,
                     current_file=resolved.name,
                 )
+                continue
+            batch.append(resolved)
+            batch_fingerprints[path_key] = signature
             if len(batch) >= batch_size:
                 processed_total += process_batch(batch, batch_fingerprints)
                 batch = []
                 batch_fingerprints = {}
+
+        if full_scan and processing_queue is not None:
+            processing_queue.put(None)
+        if worker_thread is not None:
+            worker_thread.join()
+        if worker_error is not None:
+            raise worker_error
 
         if batch:
             processed_total += process_batch(batch, batch_fingerprints)
@@ -1128,13 +1246,17 @@ class FolderWatcher:
         if processed_total == 0:
             message = (
                 f"未发现新增图片，已扫描 {source_total} 张"
+                if source_total is not None
+                else f"未发现新增图片，已检查 {len(scanned_paths)} 张"
                 if full_scan
                 else "收到文件变化，但没有可处理的新图片"
             )
             self._set_runtime_state(
                 phase="idle",
                 message=message,
-                scan_count=source_total if full_scan else self.scan_count,
+                scan_count=(source_total if source_total is not None else len(scanned_paths))
+                if full_scan
+                else self.scan_count,
                 pending_count=0,
                 batch_total=0,
                 batch_progress=0,
@@ -1145,7 +1267,9 @@ class FolderWatcher:
         self._set_runtime_state(
             phase="idle",
             message=f"自动监控本轮完成，共处理 {processed_total} 张",
-            scan_count=source_total if full_scan else self.scan_count,
+            scan_count=(source_total if source_total is not None else len(scanned_paths))
+            if full_scan
+            else self.scan_count,
             pending_count=0,
             batch_total=0,
             batch_progress=0,
